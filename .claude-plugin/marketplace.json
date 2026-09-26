@@ -1,0 +1,1 @@
+{"name": "sovereign-echo", "owner": {"name": "CallMeHFK", "url": "https://github.com/CallMeHFK"}, "plugins": [{"name": "sovereign-echo", "source": "./", "description": "Restate your personal data-sovereignty notice in every conversation (UserPromptSubmit hook). 每次对话重申个人数据主权声明。", "version": "0.1.0"}]}

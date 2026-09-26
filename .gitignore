@@ -1,0 +1,3 @@
+*.bak-sovereign-echo-*
+.DS_Store
+*.log
