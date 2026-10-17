@@ -94,7 +94,7 @@ python3 ~/.sovereign-echo/crypto/smseal.py open   --in FILE [--request "the orig
 python3 ~/.sovereign-echo/crypto/smseal.py verify --in FILE --pubkey other.pub.pem
 ```
 
-`open` needs your private key; `verify` needs only someone's public key. That asymmetry *is* the "only I can decrypt" property: hand your public key to anyone and they can confirm a sealed notice is really yours and unmodified, while nobody can read its contents.
+`open` prints a one-line status header (`OK key=… created=… request=…`) followed by the recovered plaintext; `verify` prints the same kind of line and nothing else. `open` needs your private key; `verify` needs only someone's public key. That asymmetry *is* the "only I can decrypt" property: hand your public key to anyone and they can confirm a sealed notice is really yours and unmodified, while nobody can read its contents.
 
 If sealing is impossible (no python3, module missing, or no keystore) the hook emits **nothing at all** and notes why on stderr. Falling back to plaintext would defeat the whole point — a hook that cannot seal fails closed.
 

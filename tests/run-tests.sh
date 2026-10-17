@@ -172,7 +172,30 @@ if [ -f "$sealer" ]; then
 
   python3 "$sealer" open --home "$KEYHOME" --in "$envelope" > "$opened" 2>"$KEYHOME/open.err"; rc=$?
   check "open exits 0" '[ "$rc" -eq 0 ]'
-  check "seal -> open round trip recovers the notice byte for byte" 'cmp -s "$opened" "$notice"'
+  # `open` prints a human-readable "OK key=... created=... request=..." status
+  # line first, then the recovered plaintext.
+  check "open prints an OK status line" 'head -n 1 "$opened" | grep -q "^OK "'
+  check "status line reports the KeyId" 'head -n 1 "$opened" | grep -q "key="'
+  check "seal -> open round trip recovers the notice byte for byte" 'tail -n +2 "$opened" | cmp -s - "$notice"'
+
+  # Users paste an envelope straight out of a transcript — surrounding prose
+  # must not stop it from opening.
+  pasted="$KEYHOME/pasted.txt"
+  { echo "…earlier conversation prose…"; cat "$envelope"; echo "…later prose…"; } > "$pasted"
+  python3 "$sealer" open --home "$KEYHOME" --in "$pasted" > "$KEYHOME/pasted.out" 2>/dev/null; rc=$?
+  check "open finds the envelope inside pasted transcript prose" '[ "$rc" -eq 0 ]'
+  check "pasted round trip is still byte for byte" 'tail -n +2 "$KEYHOME/pasted.out" | cmp -s - "$notice"'
+
+  # Prompt binding: seal --hook digests obj["prompt"] and open must agree.
+  bound="$KEYHOME/bound.txt"
+  printf '{"session_id":"s1","prompt":"please review my code"}' | \
+    python3 "$sealer" seal --notice "$notice" --home "$KEYHOME" --hook > "$bound" 2>/dev/null; rc=$?
+  check "seal --hook exits 0" '[ "$rc" -eq 0 ]'
+  check "hook-sealed envelope carries a 64-hex Request digest" 'grep -qE "^Request: [0-9a-f]{64}$" "$bound"'
+  python3 "$sealer" open --home "$KEYHOME" --in "$bound" --request "please review my code" >/dev/null 2>&1; rc=$?
+  check "open accepts the matching prompt" '[ "$rc" -eq 0 ]'
+  python3 "$sealer" open --home "$KEYHOME" --in "$bound" --request "a different prompt" >/dev/null 2>&1; rc=$?
+  check "open rejects a substituted prompt" '[ "$rc" -ne 0 ]'
 
   PUBONLY="$(mktemp -d)"
   cp -f "$KEYHOME/keys/sm2-public.pem" "$PUBONLY/"
