@@ -339,25 +339,46 @@ def _pem(label, der):
         label, "\n".join(lines), label)
 
 
-def _unpem(text, label):
+def _pem_blocks(text):
+    """Yield (label, der) for each PEM block in `text`, in order.
+
+    A file may carry more than one block: OpenSSL writes the curve parameters
+    ahead of the key (e.g. `openssl ecparam -name SM2 -genkey`).
+    """
     if isinstance(text, bytes):
         text = text.decode("utf-8", "replace")
-    start = text.find("-----BEGIN ")
-    if start < 0:
-        raise PEMFormatError("no PEM header found")
-    end = text.find("-----END ", start)
-    if end < 0:
-        raise PEMFormatError("no PEM footer found")
-    body = text[start:end]
-    nl = body.find("\n")
-    header = body[len("-----BEGIN "):nl].strip()
-    if label is not None and header != label:
-        raise PEMFormatError("expected %r PEM, got %r" % (label, header))
-    b64 = "".join(body[nl + 1:].split())
-    try:
-        return base64.b64decode(b64, validate=True)
-    except Exception:
-        raise PEMFormatError("invalid base64 in PEM body")
+    pos = 0
+    while True:
+        start = text.find("-----BEGIN ", pos)
+        if start < 0:
+            return
+        end = text.find("-----END ", start)
+        if end < 0:
+            raise PEMFormatError("no PEM footer found")
+        nl = text.find("\n", start)
+        if nl < 0 or nl > end:
+            raise PEMFormatError("malformed PEM header")
+        marker = text[start:nl].strip()
+        if not marker.endswith("-----"):
+            raise PEMFormatError("malformed PEM header")
+        label = marker[len("-----BEGIN "):-len("-----")].strip()
+        end_nl = text.find("\n", end)
+        stop = end_nl if end_nl >= 0 else len(text)
+        b64 = "".join(text[nl + 1:end].split())
+        try:
+            der = base64.b64decode(b64, validate=True)
+        except Exception:
+            raise PEMFormatError("invalid base64 in PEM body")
+        yield label, der
+        pos = stop
+
+
+def _unpem(text, label):
+    for header, der in _pem_blocks(text):
+        if label is not None and header != label:
+            raise PEMFormatError("expected %r PEM, got %r" % (label, header))
+        return der
+    raise PEMFormatError("no PEM header found")
 
 
 # ---------------------------------------------------------------------------
@@ -395,23 +416,53 @@ def _ec_private_from_der(content):
     return int.from_bytes(items[1][1], "big")
 
 
-def load_private_pem(text):
-    """Load a SEC1 'EC PRIVATE KEY' (also accepts an unencrypted PKCS#8 key)."""
-    der = _unpem(text, None)
-    tag, content, _ = _read_tlv(der, 0)
-    if tag != 0x30:
-        raise PEMFormatError("expected a DER SEQUENCE")
+# SEC1 (RFC 5915) private key blocks: OpenSSL 3 names the SM2 variant
+# "SM2 PRIVATE KEY", older releases and everything else use "EC PRIVATE KEY".
+_PRIVATE_PEM_LABELS = ("EC PRIVATE KEY", "SM2 PRIVATE KEY", "PRIVATE KEY")
+
+
+def _private_key_from_pkcs8(content):
+    """PKCS#8 PrivateKeyInfo: SEQUENCE { version, algid, OCTET STRING key }."""
     items = _der_items(content)
-    if items and items[0][0] == 0x30:
-        # PKCS#8 PrivateKeyInfo: SEQUENCE { version, algid, OCTET STRING key }
-        if len(items) < 3 or items[2][0] != 0x04:
-            raise PEMFormatError("malformed PKCS#8 PrivateKeyInfo")
-        inner = items[2][1]
-        itag, icontent, _ = _read_tlv(inner, 0)
-        if itag != 0x30:
-            raise PEMFormatError("malformed inner ECPrivateKey")
-        return PrivateKey(_ec_private_from_der(icontent))
-    return PrivateKey(_ec_private_from_der(content))
+    if len(items) < 3 or items[0][0] != 0x02 or items[1][0] != 0x30 \
+            or items[2][0] != 0x04:
+        raise PEMFormatError("malformed PKCS#8 PrivateKeyInfo")
+    if int.from_bytes(items[0][1], "big") != 0:
+        raise PEMFormatError("unsupported PKCS#8 version")
+    alg = _der_items(items[1][1])
+    if not alg or alg[0][0] != 0x06:
+        raise PEMFormatError("PKCS#8 PrivateKeyInfo has no algorithm OID")
+    if alg[0][1] not in (_OID_EC_PUBLIC_KEY, _OID_SM2_CURVE):
+        raise PEMFormatError(
+            "PKCS#8 key algorithm is not EC/SM2 (expected id-ecPublicKey "
+            "1.2.840.10045.2.1 or SM2 1.2.156.10197.1.301)")
+    tag, inner, _ = _read_tlv(items[2][1], 0)
+    if tag != 0x30:
+        raise PEMFormatError("malformed inner ECPrivateKey")
+    return PrivateKey(_ec_private_from_der(inner))
+
+
+def load_private_pem(text):
+    """Load a SEC1 'EC PRIVATE KEY' or an unencrypted PKCS#8 'PRIVATE KEY'.
+
+    Both are what OpenSSL emits: `ecparam -name SM2 -genkey` writes PKCS#8
+    (preceded by a parameters block, which is skipped here), `ec` writes SEC1.
+    """
+    for label, der in _pem_blocks(text):
+        if label == "ENCRYPTED PRIVATE KEY":
+            raise PEMFormatError("encrypted private keys are not supported")
+        if label not in _PRIVATE_PEM_LABELS:
+            continue
+        tag, content, _ = _read_tlv(der, 0)
+        if tag != 0x30:
+            raise PEMFormatError("expected a DER SEQUENCE")
+        items = _der_items(content)
+        if len(items) >= 2 and items[0][0] == 0x02 and items[1][0] == 0x30:
+            return _private_key_from_pkcs8(content)
+        return PrivateKey(_ec_private_from_der(content))
+    raise PEMFormatError(
+        "no private key found: expected an 'EC PRIVATE KEY' or "
+        "'PRIVATE KEY' PEM block")
 
 
 def load_public_pem(text):

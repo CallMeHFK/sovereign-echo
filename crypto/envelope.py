@@ -24,6 +24,10 @@ Binary body = TLV records `type(1) || length(2, big-endian) || value`:
 Every stored header field is authenticated: the AAD fed to both GCM
 operations and the bytes covered by the signature are derived from them, so
 tampering with any header breaks both.
+
+The signature covers the TLV records exactly as they arrived on the wire
+(`aad || body[:signature_tlv_start]`), never a re-serialization, so a sealed
+envelope has one canonical byte string: permuting TLV records breaks it.
 """
 
 import base64
@@ -107,25 +111,30 @@ def _tlv(t, value):
 
 
 def _parse_tlvs(body):
+    """Split `body` into TLV records. Returns (fields, signature_tlv_start)."""
     fields = {}
+    sig_start = None
     i = 0
     while i < len(body):
         if i + 3 > len(body):
             raise EnvelopeError("truncated TLV record")
         t = body[i]
+        start = i
         length = int.from_bytes(body[i + 1:i + 3], "big")
         i += 3
         if i + length > len(body):
             raise EnvelopeError("truncated TLV value")
         if t in fields or t not in (1, 2, 3, 4, 5, 6):
             raise EnvelopeError("unexpected TLV record 0x%02x" % t)
+        if t == _TLV_SIGNATURE:
+            sig_start = start
         fields[t] = body[i:i + length]
         i += length
     for t in (_TLV_EPHEMERAL, _TLV_CEK_NONCE, _TLV_CEK,
               _TLV_PAYLOAD_NONCE, _TLV_PAYLOAD, _TLV_SIGNATURE):
         if t not in fields:
             raise EnvelopeError("missing TLV record 0x%02x" % t)
-    return fields
+    return fields, sig_start
 
 
 class Envelope(object):
@@ -133,9 +142,9 @@ class Envelope(object):
 
     __slots__ = ("headers", "keyid", "created", "request",
                  "ephemeral", "cek_nonce", "wrapped_cek",
-                 "payload_nonce", "payload", "signature")
+                 "payload_nonce", "payload", "signature", "signed_prefix")
 
-    def __init__(self, headers, tlvs):
+    def __init__(self, headers, tlvs, signed_prefix=b""):
         self.headers = headers
         self.keyid = headers["KeyId"]
         self.created = headers["Created"]
@@ -147,6 +156,7 @@ class Envelope(object):
         self.payload_nonce = tlvs[_TLV_PAYLOAD_NONCE]
         self.payload = tlvs[_TLV_PAYLOAD]
         self.signature = tlvs[_TLV_SIGNATURE]
+        self.signed_prefix = signed_prefix
 
     def aad(self):
         fields = dict(self.headers)
@@ -154,26 +164,17 @@ class Envelope(object):
         return _aad(fields)
 
     def signed_bytes(self):
-        """The bytes covered by the signature: AAD plus TLVs 1..5."""
-        out = [self.aad()]
-        for t in (_TLV_EPHEMERAL, _TLV_CEK_NONCE, _TLV_CEK,
-                  _TLV_PAYLOAD_NONCE, _TLV_PAYLOAD):
-            v = getattr(self, _SLOT_FOR_TLV[t])
-            out.append(_tlv(t, v))
-        return b"".join(out)
+        """The bytes covered by the signature: AAD plus the received TLVs 1..5.
+
+        `signed_prefix` is the decoded body up to (not including) the signature
+        TLV, i.e. the records as they arrived on the wire rather than a
+        canonical re-serialization, so TLV order is authenticated too.
+        """
+        return self.aad() + self.signed_prefix
 
     def __repr__(self):
         return "<Envelope keyid=%s created=%s request=%s>" % (
             self.keyid, self.created, self.request or "-")
-
-
-_SLOT_FOR_TLV = {
-    _TLV_EPHEMERAL: "ephemeral",
-    _TLV_CEK_NONCE: "cek_nonce",
-    _TLV_CEK: "wrapped_cek",
-    _TLV_PAYLOAD_NONCE: "payload_nonce",
-    _TLV_PAYLOAD: "payload",
-}
 
 
 def _as_request(request):
@@ -289,7 +290,7 @@ def parse(text):
     except Exception:
         raise EnvelopeError("envelope body is not valid base64")
 
-    tlvs = _parse_tlvs(body)
+    tlvs, sig_start = _parse_tlvs(body)
     if len(tlvs[_TLV_EPHEMERAL]) != 33:
         raise EnvelopeError("malformed ephemeral point")
     if len(tlvs[_TLV_CEK_NONCE]) != 12 or len(tlvs[_TLV_PAYLOAD_NONCE]) != 12:
@@ -298,7 +299,7 @@ def parse(text):
         raise EnvelopeError("malformed wrapped key")
     if len(tlvs[_TLV_PAYLOAD]) < 16:
         raise EnvelopeError("malformed payload")
-    return Envelope(headers, tlvs)
+    return Envelope(headers, tlvs, body[:sig_start])
 
 
 def verify(env, pub):
