@@ -1,3 +1,9 @@
 *.bak-sovereign-echo-*
 .DS_Store
 *.log
+
+# Never commit key material. install.sh copies whole directories into
+# $SOVEREIGN_ECHO_HOME, which some users point inside this repo.
+keys/
+*.pem
+*.key

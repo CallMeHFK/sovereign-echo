@@ -4,6 +4,10 @@
 # Wires the personal data-sovereignty notice into coding agents so it is
 # restated in every conversation.
 #
+# The per-turn notice is shipped sealed: it is encrypted (SM4-GCM) and signed
+# (SM2/SM3) with a key pair that only you hold, so the provider receives an
+# opaque envelope rather than readable prose.
+#
 # Targets:
 #   claude   Claude Code   -> UserPromptSubmit hook in ~/.claude/settings.json
 #   codex    OpenAI Codex  -> marker block in ~/.codex/AGENTS.md
@@ -15,6 +19,12 @@
 #   ./install.sh --target all
 #   ./install.sh --target all --uninstall
 #   ./install.sh --print-notice
+#   ./install.sh --print-sealed
+#   ./install.sh --keygen
+#
+# Keys:
+#   --keygen      (re)generate the SM2 key pair in $SOVEREIGN_ECHO_HOME/keys
+#   --no-keygen   install without generating a key pair
 #
 # Environment overrides:
 #   SOVEREIGN_ECHO_HOME  runtime dir            (default: $HOME/.sovereign-echo)
@@ -23,6 +33,7 @@
 #   QWENPAW_WORKSPACE    QwenPaw workspace dir  (default: $HOME/.qwenpaw/workspaces/default)
 #   GENERIC_FILE         target file for --target generic
 #   SOVEREIGN_ECHO_NOTICE  custom notice file used by the hook at runtime
+#   SOVEREIGN_ECHO_SEAL  sealed (default) | plain — what the hook emits
 set -euo pipefail
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
@@ -32,14 +43,69 @@ CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 QWENPAW_WORKSPACE="${QWENPAW_WORKSPACE:-$HOME/.qwenpaw/workspaces/default}"
 GENERIC_FILE="${GENERIC_FILE:-}"
+notice_file="${SOVEREIGN_ECHO_NOTICE:-$repo_dir/declarations/notice.compact.txt}"
+sealer="$repo_dir/crypto/smseal.py"
+keys_dir="$SE_HOME/keys"
 
 MARK_BEGIN="<!-- BEGIN sovereign-echo"
 MARK_END="<!-- END sovereign-echo"
 
 uninstall=0
+auto_keygen=1
+do_keygen=0
 targets=()
 
-usage() { sed -n '2,30p' "${BASH_SOURCE[0]:-$0}" | sed 's/^# \{0,1\}//'; exit 0; }
+# --- keys -------------------------------------------------------------------
+have_private_key() { [ -f "$keys_dir/sm2-private.pem" ] && [ -f "$keys_dir/sm2-public.pem" ]; }
+
+# Generate the SM2 key pair. Prints the KeyId on success. Never aborts the
+# installer: a keygen failure is a warning, never a failed install.
+keygen() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "[sovereign-echo] keygen skipped: python3 not found in PATH" >&2
+    return 1
+  fi
+  if [ ! -f "$sealer" ]; then
+    echo "[sovereign-echo] keygen skipped: $sealer missing" >&2
+    return 1
+  fi
+  local out rc=0
+  out="$(python3 "$sealer" keygen --home "$SE_HOME" 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "[sovereign-echo] keygen failed (exit $rc)" >&2
+    printf '%s\n' "$out" >&2
+    return 1
+  fi
+  echo "Keys written to $keys_dir"
+  printf '%s\n' "$out"
+}
+
+ensure_keys() {
+  if have_private_key; then
+    [ "$do_keygen" -eq 1 ] && echo "Keystore already present in $keys_dir (use keygen --force to replace)"
+    return 0
+  fi
+  if [ "$auto_keygen" -eq 0 ]; then
+    echo "No keystore — skipped (--no-keygen); run '$0 --keygen' later"
+    return 0
+  fi
+  echo "Generating SM2 key pair (nobody else can ever open your sealed notice)…"
+  keygen || echo "Continuing without a keystore. sealed mode will emit nothing until you run: $0 --keygen" >&2
+}
+
+print_sealed() {
+  local notice="$1"
+  if ! command -v python3 >/dev/null 2>&1; then echo "error: python3 not found in PATH" >&2; exit 1; fi
+  if [ ! -f "$sealer" ]; then echo "error: $sealer missing" >&2; exit 1; fi
+  if [ ! -f "$notice" ]; then echo "error: notice file not found: $notice" >&2; exit 1; fi
+  if ! have_private_key; then
+    echo "error: no keystore in $keys_dir — run '$0 --keygen' first" >&2
+    exit 1
+  fi
+  python3 "$sealer" seal --notice "$notice" --home "$SE_HOME" </dev/null
+}
+
+usage() { sed -n '2,36p' "${BASH_SOURCE[0]:-$0}" | sed 's/^# \{0,1\}//'; exit 0; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -52,11 +118,20 @@ while [ $# -gt 0 ]; do
       esac
       shift 2 ;;
     --uninstall) uninstall=1; shift ;;
-    --print-notice) cat "$repo_dir/declarations/notice.compact.txt"; exit 0 ;;
+    --keygen) do_keygen=1; auto_keygen=1; shift ;;
+    --no-keygen) auto_keygen=0; shift ;;
+    --print-notice) cat "$notice_file"; exit 0 ;;
+    --print-sealed) print_sealed "$notice_file"; exit 0;;
     --help|-h) usage ;;
     *) echo "error: unknown argument '$1'" >&2; exit 2 ;;
   esac
 done
+
+if [ "$do_keygen" -eq 1 ] && [ ${#targets[@]} -eq 0 ]; then
+  ensure_keys
+  have_private_key || exit 1
+  exit 0
+fi
 
 if [ ${#targets[@]} -eq 0 ]; then
   echo "Nothing to do. Pass --target claude|codex|qwenpaw|generic|all (see --help)." >&2
@@ -206,6 +281,12 @@ install_runtime() {
   [ "$runtime_installed" -eq 1 ] && return 0
   mkdir -p "$SE_HOME"
   cp -r "$repo_dir/declarations" "$repo_dir/scripts" "$repo_dir/templates" "$SE_HOME/"
+  if [ -d "$repo_dir/crypto" ]; then
+    cp -r "$repo_dir/crypto" "$SE_HOME/"
+    chmod 0644 "$SE_HOME"/crypto/*.py
+  else
+    echo "[sovereign-echo] warning: $repo_dir/crypto missing — sealed mode unavailable" >&2
+  fi
   chmod +x "$SE_HOME"/scripts/*.sh
   runtime_installed=1
   echo "runtime installed to $SE_HOME"
@@ -218,6 +299,7 @@ done
 
 if [ "$uninstall" -eq 0 ]; then
   install_runtime
+  ensure_keys
 fi
 
 echo
@@ -227,7 +309,9 @@ if [ "$uninstall" -eq 1 ]; then
 else
   target_flags=""
   for t in "${targets[@]}"; do target_flags="$target_flags --target $t"; done
-  echo "Done. Your data-sovereignty notice will now be restated in every conversation."
+  echo "Done. Your data-sovereignty notice will now be restated in every conversation"
+  echo "as a sealed envelope only you can open ($keys_dir/sm2-private.pem — never share it)."
   echo "Preview the notice:  $repo_dir/install.sh --print-notice"
+  echo "Preview the envelope: $repo_dir/install.sh --print-sealed"
   echo "Uninstall later:     $repo_dir/install.sh$target_flags --uninstall"
 fi
