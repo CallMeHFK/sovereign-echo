@@ -100,6 +100,12 @@ If sealing is impossible (no python3, module missing, or no keystore) the hook e
 
 Set `SOVEREIGN_ECHO_SEAL=plain` to restore the old plaintext behaviour, e.g. for providers where readable prose matters more to you than confidentiality.
 
+### SM2 user identity
+
+Our envelopes use the GM/T 0003 default user identity `1234567812345678` in the SM2 Z-digest — for signing and for envelope signatures alike — which is what GmSSL and BouncyCastle SM2 peers expect. There is deliberately no knob and no second signature flavour.
+
+OpenSSL 3's `dgst -sm3 -sign` / `-verify` instead uses an **empty** user identity (ENTL `0x0000`), so `openssl dgst -sm3 -verify` will **not** cross-verify our envelope signatures out of the box. A verifier working through OpenSSL must pass `ident=b""` to `sm2.verify(...)`. That is an OpenSSL quirk, not a deviation on our side.
+
 ## Customize
 
 The declaration is yours — edit it:

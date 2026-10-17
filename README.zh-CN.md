@@ -97,6 +97,12 @@ python3 ~/.sovereign-echo/crypto/smseal.py verify --in FILE --pubkey other.pub.p
 
 设 `SOVEREIGN_ECHO_SEAL=plain` 可恢复旧的明文行为，比如在你更看重"对方能读懂"而非"保密"的场景里。
 
+### SM2 用户标识
+
+我们的信封在 SM2 的 Z 值摘要中使用 GM/T 0003 的默认用户标识 `1234567812345678`——签名与信封签名一致——这正是 GmSSL、BouncyCastle 的 SM2 实现所预期的取值。这里刻意不提供开关，也不存在第二种签名口径。
+
+OpenSSL 3 的 `dgst -sm3 -sign` / `-verify` 使用的是**空**用户标识（ENTL 为 `0x0000`），因此 `openssl dgst -sm3 -verify` **无法**直接交叉验证我们的信封签名。经由 OpenSSL 验签时必须向 `sm2.verify(...)` 传入 `ident=b""`。这是 OpenSSL 的特性，不是我们这边的偏离。
+
 ## 自定义
 
 声明是属于你的——随时改：

@@ -240,6 +240,31 @@ PY
   python3 "$sealer" open --home "$KEYHOME" --in "$bad_body" >/dev/null 2>&1; rc=$?
   check "tampered ciphertext makes open fail" '[ "$rc" -ne 0 ]'
   check "tampered body actually differs from the original" '! cmp -s "$envelope" "$bad_body"'
+
+  # TLV-order malleability: the signature must cover the bytes as received,
+  # so permuting two records on the wire must not still verify and open.
+  permuted="$KEYHOME/permuted-tlv.txt"
+  python3 - "$envelope" "$permuted" <<'PY'
+import base64, sys
+src, dst = sys.argv[1], sys.argv[2]
+lines = open(src).read().split("\n")
+i = lines.index("-----BEGIN SOVEREIGN-ECHO SEALED NOTICE-----")
+j = lines.index("-----END SOVEREIGN-ECHO SEALED NOTICE-----")
+k = i + 1
+while lines[k].strip():
+    k += 1                      # header block, then the blank separator
+raw = bytearray(base64.b64decode("".join(l.strip() for l in lines[k:j] if l.strip())))
+# 0x01 ephemeral point (3+33 B) followed by 0x02 CEK-wrap nonce (3+12 B)
+assert raw[0] == 0x01 and raw[36] == 0x02, "unexpected TLV layout"
+first, second = bytes(raw[:36]), bytes(raw[36:51])
+raw[0:51] = second + first
+b64 = base64.b64encode(bytes(raw)).decode("ascii")
+wrapped = [b64[n:n + 64] for n in range(0, len(b64), 64)]
+open(dst, "w").write("\n".join(lines[:k] + [""] + wrapped + [""] + lines[j:]))
+PY
+  python3 "$sealer" open --home "$KEYHOME" --in "$permuted" >/dev/null 2>&1; rc=$?
+  check "permuted TLV records make open fail" '[ "$rc" -ne 0 ]'
+  check "permuted envelope actually differs from the original" '! cmp -s "$envelope" "$permuted"'
 else
   skip "seal/open/verify checks (crypto/ not present)"
 fi
