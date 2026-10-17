@@ -227,6 +227,7 @@ def seal(plaintext, priv, request=None, now=None):
         + "\n".join(header_lines) + "\n"
         + "\n"
         + "\n".join(lines) + "\n"
+        + "\n"
         + END_MARKER + "\n"
     )
 
