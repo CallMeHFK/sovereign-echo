@@ -248,6 +248,7 @@ echo "== 9. emit-notice.sh sealed mode =="
 if [ -f "$sealer" ]; then
   check "install ships crypto/ into the runtime" '[ -f "$SEHOME/crypto/smseal.py" ]'
   check "installed crypto module is not executable" '[ ! -x "$SEHOME/crypto/smseal.py" ]'
+  check "install ships no __pycache__" '[ ! -d "$SEHOME/crypto/__pycache__" ]'
 
   sealed_out="$(SOVEREIGN_ECHO_HOME="$KEYHOME" "$repo_dir/scripts/emit-notice.sh" </dev/null 2>"$KEYHOME/hook.err")"; rc=$?
   check "sealed hook exits 0" '[ "$rc" -eq 0 ]'

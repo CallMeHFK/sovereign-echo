@@ -284,6 +284,9 @@ install_runtime() {
   if [ -d "$repo_dir/crypto" ]; then
     cp -r "$repo_dir/crypto" "$SE_HOME/"
     chmod 0644 "$SE_HOME"/crypto/*.py
+    # Python writes __pycache__ next to these modules as soon as the hook runs;
+    # never ship a stale copy of it (or any other bytecode) into the runtime.
+    rm -rf "$SE_HOME"/crypto/__pycache__
   else
     echo "[sovereign-echo] warning: $repo_dir/crypto missing — sealed mode unavailable" >&2
   fi
