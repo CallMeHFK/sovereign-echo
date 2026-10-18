@@ -34,12 +34,28 @@ Claude Code 用户也可以按**插件**方式安装（本仓库自身就是 mar
 git clone https://github.com/CallMeHFK/sovereign-echo
 cd sovereign-echo
 
+./install.sh                # 零配置：自动探测已安装的 Agent 并完成接入
+```
+
+这就是全部安装步骤。安装器会寻找你已经装好的 Agent（`~/.claude`、`~/.codex`、`~/.qwenpaw/workspaces/default`），只接入这些——不需要任何参数，也不需要编辑配置文件。如果一个都没找到，它会明确告诉你原因和下一步。
+
+想显式指定也可以，参数仍然有效：
+
+```bash
+./install.sh --target claude       # 逐个安装（可重复）
 ./install.sh --target all          # claude + codex + qwenpaw
-./install.sh --target claude       # 也可以逐个安装
 GENERIC_FILE=~/myagent/AGENTS.md ./install.sh --target generic
 ```
 
-安装器会把一个极小的运行时复制到 `~/.sovereign-echo/`，向 Claude 的 `settings.json` 合并一条 hook（先做带时间戳的备份，完整保留你已有的配置），并在相应的 `AGENTS.md` 里追加一个带清晰标记的块。脚本是幂等的，重复执行没有副作用。
+安装器会把一个极小的运行时复制到 `~/.sovereign-echo/`，向 Claude 的 `settings.json` 合并一条 hook（先做带时间戳的备份，完整保留你已有的配置），并在相应的 `AGENTS.md` 里追加一个带清晰标记的块。脚本是幂等的，重复执行没有副作用。需要 `python3`：没有它密封 hook 无法运行。
+
+### 当前装了什么？
+
+```bash
+./install.sh --status
+```
+
+一份只读报告：运行时在哪里、KeyId 和两把密钥的路径、以及每个 Agent 是否已接入。无论是否安装，它都以 0 退出，且绝不修改任何东西。
 
 ### 密钥
 
@@ -50,8 +66,15 @@ GENERIC_FILE=~/myagent/AGENTS.md ./install.sh --target generic
 | `sm2-private.pem` | `0600` | **绝不可外传。** 拿到它的人就能拆开你的信封；目录本身是 `0700` |
 | `sm2-public.pem` | `0644` | 可以公开。足以**验签**，不足以**拆封** |
 
+**请备份私钥。** 一旦丢失 `sm2-private.pem`，你密封过的每一条声明都永久打不开——没有恢复机制，也刻意不做托管。安装器在密钥生成的那一刻就会提醒你；请把它复制到安全的地方：
+
 ```bash
-./install.sh --keygen        # 生成/重生成密钥对，并打印 KeyId
+./install.sh --export-key ~/backups/sm2-private.pem   # 复制私钥，权限 0600
+```
+
+```bash
+./install.sh --keygen              # 生成/重生成密钥对，并打印 KeyId
+./install.sh --keygen --force      # 轮换：旧信封将永久无法打开
 ./install.sh --target all --no-keygen   # 安装但不碰密钥
 ```
 
@@ -117,16 +140,29 @@ OpenSSL 3 的 `dgst -sm3 -sign` / `-verify` 使用的是**空**用户标识（EN
 
 | 变量 | 默认值 | 含义 |
 |---|---|---|
-| `SOVEREIGN_ECHO_HOME` | `~/.sovereign-echo` | 运行时目录；密钥在 `$HOME/keys` |
+| `SOVEREIGN_ECHO_HOME` | `~/.sovereign-echo` | 运行时目录；密钥在 `$SOVEREIGN_ECHO_HOME/keys` |
 | `SOVEREIGN_ECHO_NOTICE` | `declarations/notice.compact.txt` | 要密封并输出的声明文本 |
 | `SOVEREIGN_ECHO_SEAL` | `sealed` | `sealed`（默认）或 `plain` |
 
 ## 卸载
 
 ```bash
-./install.sh --target all --uninstall
-rm -rf ~/.sovereign-echo
+./install.sh --uninstall
 ```
+
+一条命令，不需要参数：它会自动找到 sovereign-echo 接入的一切（Claude 的 hook、每个 `AGENTS.md` 里的块），全部移除，并删掉运行时脚本——但**保留你的密钥对**，因为你还需要它打开过去密封的声明。最后它会打印删除密钥的确切命令：
+
+```bash
+./install.sh --uninstall --purge   # 删除整个 ~/.sovereign-echo，包括私钥
+```
+
+`--purge` 不可逆：私钥一旦删除，你密封过的每一条声明都永久打不开。在终端上它会先询问 `[y/N]`；当 stdin 不是终端时，必须加 `--yes` 才会执行：
+
+```bash
+./install.sh --uninstall --purge --yes
+```
+
+如果只想卸载某一个 Agent，旧形式依然可用：`./install.sh --target claude --uninstall`。
 
 被修改文件的备份会留在原位置（`*.bak-sovereign-echo-*`）。
 

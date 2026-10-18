@@ -52,7 +52,8 @@ check "missing notice file emits nothing on stdout" '[ -z "$out2" ]'
 
 echo "== 3. fake-HOME install (all targets) =="
 FAKE="$(mktemp -d)"
-trap 'rm -rf "$FAKE"' EXIT
+T2=""; T3=""; T4=""; T5=""; T6=""
+trap 'rm -rf "$FAKE" ${T2:+"$T2"} ${T3:+"$T3"} ${T4:+"$T4"} ${T5:+"$T5"} ${T6:+"$T6"}' EXIT
 mkdir -p "$FAKE/.claude" "$FAKE/.codex" "$FAKE/.qwenpaw/workspaces/default"
 echo "PRE-EXISTING CODEX CONTENT" > "$FAKE/.codex/AGENTS.md"
 echo "PRE-EXISTING QWENPAW CONTENT" > "$FAKE/.qwenpaw/workspaces/default/AGENTS.md"
@@ -303,6 +304,130 @@ else
   skip "sealed-mode hook checks (crypto/ not present)"
 fi
 rm -rf "$KEYHOME"
+
+echo "== 10. zero-config install, status, uninstall, purge =="
+T2="$(mktemp -d)"
+mkdir -p "$T2/.claude" "$T2/.codex"
+cat > "$T2/.claude/settings.json" <<'JSON'
+{
+  "env": { "SOME_VAR": "keep-me" },
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "shepherd-hook claude", "timeout": 5 } ] }
+    ]
+  }
+}
+JSON
+
+# --- bare install auto-detects the agents that exist ---
+out="$(HOME="$T2" "$repo_dir/install.sh" 2>&1)"; rc=$?
+check "bare install exits 0 when agent dirs exist" '[ "$rc" -eq 0 ]'
+check "bare install wires claude (hook entry present)" 'grep -q "emit-notice.sh" "$T2/.claude/settings.json"'
+check "bare install wires codex (block present)" '[ "$(count_of "$T2/.codex/AGENTS.md" "BEGIN sovereign-echo")" = "1" ]'
+check "bare install leaves undetected qwenpaw alone" '[ ! -f "$T2/.qwenpaw/workspaces/default/AGENTS.md" ]'
+check "bare install reports what it detected" 'printf "%s" "$out" | grep -q "Detected agents: claude codex"'
+check "bare install summary lists wired targets" 'printf "%s" "$out" | grep -q "wired:.*claude" && printf "%s" "$out" | grep -q "wired:.*codex"'
+check "bare install keeps the foreign hook" 'grep -q "shepherd-hook claude" "$T2/.claude/settings.json"'
+check "bare install keeps foreign env" 'grep -q "keep-me" "$T2/.claude/settings.json"'
+check "SE_HOME is chmod 0700" '[ "$(mode_of "$T2/.sovereign-echo")" = "0700" ]'
+
+# --- --status after install ---
+st="$(HOME="$T2" "$repo_dir/install.sh" --status 2>&1)"; src=$?
+check "--status exits 0 after install" '[ "$src" -eq 0 ]'
+check "--status reports the runtime location" 'printf "%s" "$st" | grep -q "Runtime:.*present at"'
+check "--status reports the KeyId" 'printf "%s" "$st" | grep -qE "KeyId: [0-9a-f]{16}"'
+check "--status reports both key paths" 'printf "%s" "$st" | grep -q "sm2-private.pem" && printf "%s" "$st" | grep -q "sm2-public.pem"'
+check "--status reports claude wired" 'printf "%s" "$st" | grep -q "claude.*wired"'
+check "--status reports codex wired" 'printf "%s" "$st" | grep -q "codex.*wired"'
+check "--status reports qwenpaw not wired" 'printf "%s" "$st" | grep -q "qwenpaw.*not wired"'
+
+# --- bare uninstall: no target flags, keys kept ---
+out="$(HOME="$T2" "$repo_dir/install.sh" --uninstall 2>&1)"; rc=$?
+check "bare uninstall exits 0" '[ "$rc" -eq 0 ]'
+check "bare uninstall removes the claude hook" '[ "$(count_of "$T2/.claude/settings.json" "emit-notice.sh")" = "0" ]'
+check "bare uninstall removes the codex block" '[ "$(count_of "$T2/.codex/AGENTS.md" "BEGIN sovereign-echo")" = "0" ]'
+check "bare uninstall keeps the foreign hook" 'grep -q "shepherd-hook claude" "$T2/.claude/settings.json"'
+check "bare uninstall keeps foreign env" 'grep -q "keep-me" "$T2/.claude/settings.json"'
+check "bare uninstall keeps keys/" '[ -f "$T2/.sovereign-echo/keys/sm2-private.pem" ]'
+check "bare uninstall removes runtime scripts" '[ ! -f "$T2/.sovereign-echo/scripts/emit-notice.sh" ]'
+check "bare uninstall says where the key is" 'printf "%s" "$out" | grep -q "sm2-private.pem"'
+check "bare uninstall gives the purge command" 'printf "%s" "$out" | grep -q -- "--uninstall --purge"'
+check "bare uninstall left a settings backup" 'ls "$T2/.claude" | grep -q "bak-sovereign-echo"'
+HOME="$T2" "$repo_dir/install.sh" --uninstall </dev/null > /dev/null 2>&1; rc=$?
+check "second bare uninstall still exits 0" '[ "$rc" -eq 0 ]'
+check "second bare uninstall still keeps keys/" '[ -f "$T2/.sovereign-echo/keys/sm2-private.pem" ]'
+
+# --- empty HOME: helpful failure, clean status ---
+T3="$(mktemp -d)"
+out="$(HOME="$T3" "$repo_dir/install.sh" 2>&1)"; rc=$?
+check "bare install with no agents exits non-zero" '[ "$rc" -ne 0 ]'
+check "bare install names what it looked for" 'printf "%s" "$out" | grep -q "\.claude" && printf "%s" "$out" | grep -q "\.codex"'
+check "bare install suggests explicit targets" 'printf "%s" "$out" | grep -q -- "--target"'
+check "bare install with no agents installs nothing" '[ ! -d "$T3/.sovereign-echo" ]'
+out="$(HOME="$T3" "$repo_dir/install.sh" --target all 2>&1)"; rc=$?
+check "--target all with nothing present exits non-zero" '[ "$rc" -ne 0 ]'
+check "--target all with nothing present says why" 'printf "%s" "$out" | grep -q "skipped:"'
+out="$(HOME="$T3" "$repo_dir/install.sh" --status 2>&1)"; rc=$?
+check "--status exits 0 in an empty HOME" '[ "$rc" -eq 0 ]'
+check "--status says nothing is installed" 'printf "%s" "$out" | grep -qi "not installed"'
+
+# --- purge: refuse without --yes on non-TTY, then --yes ---
+kid1="$(HOME="$T2" "$repo_dir/install.sh" --status | sed -n 's/.*KeyId: \([0-9a-f]*\).*/\1/p')"
+HOME="$T2" "$repo_dir/install.sh" > /dev/null 2>&1
+kid2="$(HOME="$T2" "$repo_dir/install.sh" --status | sed -n 's/.*KeyId: \([0-9a-f]*\).*/\1/p')"
+check "reinstall keeps the existing key pair" '[ -n "$kid1" ] && [ "$kid1" = "$kid2" ]'
+out="$(HOME="$T2" "$repo_dir/install.sh" --uninstall --purge </dev/null 2>&1)"; rc=$?
+check "--purge without --yes refuses on non-TTY" '[ "$rc" -ne 0 ]'
+check "--purge refusal explains the key loss" 'printf "%s" "$out" | grep -qi "unreadable"'
+check "--purge refusal names the fix" 'printf "%s" "$out" | grep -q -- "--yes"'
+check "--purge refusal changed nothing" 'grep -q "emit-notice.sh" "$T2/.claude/settings.json" && [ -d "$T2/.sovereign-echo/keys" ]'
+HOME="$T2" "$repo_dir/install.sh" --uninstall --purge --yes </dev/null > /dev/null 2>&1; rc=$?
+check "--purge --yes exits 0" '[ "$rc" -eq 0 ]'
+check "--purge --yes removes SE_HOME entirely" '[ ! -d "$T2/.sovereign-echo" ]'
+check "--purge --yes removes the hook" '[ "$(count_of "$T2/.claude/settings.json" "emit-notice.sh")" = "0" ]'
+check "--purge --yes removes the codex block" '[ "$(count_of "$T2/.codex/AGENTS.md" "BEGIN sovereign-echo")" = "0" ]'
+
+# --- --export-key ---
+T4="$(mktemp -d)"
+mkdir -p "$T4/.claude"
+out="$(HOME="$T4" "$repo_dir/install.sh" --export-key "$T4/backup/sm2-private.pem" 2>&1)"; rc=$?
+check "--export-key exits 0" '[ "$rc" -eq 0 ]'
+check "--export-key prints the custody warning" 'printf "%s" "$out" | grep -qi "never share" && printf "%s" "$out" | grep -qi "back it up" && printf "%s" "$out" | grep -qi "no recovery mechanism"'
+check "--export-key writes a 0600 file" '[ "$(mode_of "$T4/backup/sm2-private.pem")" = "0600" ]'
+check "--export-key copies the real private key" 'cmp -s "$T4/backup/sm2-private.pem" "$T4/.sovereign-echo/keys/sm2-private.pem"'
+cp -f "$T4/backup/sm2-private.pem" "$T4/snapshot.pem"
+HOME="$T4" "$repo_dir/install.sh" --export-key "$T4/backup/sm2-private.pem" </dev/null > /dev/null 2>&1; rc=$?
+check "--export-key refuses to overwrite without --force" '[ "$rc" -ne 0 ]'
+check "--export-key refusal left the file untouched" 'cmp -s "$T4/backup/sm2-private.pem" "$T4/snapshot.pem"'
+HOME="$T4" "$repo_dir/install.sh" --export-key "$T4/backup/sm2-private.pem" --force </dev/null > /dev/null 2>&1; rc=$?
+check "--export-key --force overwrites" '[ "$rc" -eq 0 ]'
+
+# --- friendly failure: malformed settings.json ---
+T5="$(mktemp -d)"
+mkdir -p "$T5/.claude"
+printf '{ this is not json' > "$T5/.claude/settings.json"
+out="$(HOME="$T5" "$repo_dir/install.sh" 2>&1)"; rc=$?
+check "malformed settings.json exits non-zero" '[ "$rc" -ne 0 ]'
+check "malformed settings.json names the file" 'printf "%s" "$out" | grep -q "settings.json"'
+check "malformed settings.json prints no traceback" '! printf "%s" "$out" | grep -q "Traceback"'
+check "malformed settings.json was left untouched" 'grep -q "this is not json" "$T5/.claude/settings.json"'
+
+# --- --force key rotation ---
+T6="$(mktemp -d)"
+mkdir -p "$T6/.claude"
+HOME="$T6" "$repo_dir/install.sh" > /dev/null 2>&1
+priv_before="$(cat "$T6/.sovereign-echo/keys/sm2-private.pem")"
+kid_before="$(HOME="$T6" "$repo_dir/install.sh" --status | sed -n 's/.*KeyId: \([0-9a-f]*\).*/\1/p')"
+out="$(HOME="$T6" "$repo_dir/install.sh" --keygen --force 2>&1)"; rc=$?
+check "--keygen --force exits 0" '[ "$rc" -eq 0 ]'
+check "--keygen --force rotates the private key" '[ "$priv_before" != "$(cat "$T6/.sovereign-echo/keys/sm2-private.pem")" ]'
+kid_after="$(HOME="$T6" "$repo_dir/install.sh" --status | sed -n 's/.*KeyId: \([0-9a-f]*\).*/\1/p')"
+check "--keygen --force changes the KeyId" '[ -n "$kid_after" ] && [ "$kid_before" != "$kid_after" ]'
+check "rotation warns old envelopes are unreadable" 'printf "%s" "$out" | grep -qi "unreadable"'
+priv_rotated="$(cat "$T6/.sovereign-echo/keys/sm2-private.pem")"
+out="$(HOME="$T6" "$repo_dir/install.sh" --keygen 2>&1)"
+check "--keygen without --force keeps the key" '[ "$priv_rotated" = "$(cat "$T6/.sovereign-echo/keys/sm2-private.pem")" ]'
+check "--keygen points at --force as the real command" 'printf "%s" "$out" | grep -q -- "--keygen --force"'
 
 echo
 echo "RESULT: $pass passed, $fail failed"

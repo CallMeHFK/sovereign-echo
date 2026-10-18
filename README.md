@@ -37,12 +37,28 @@ Claude Code users can alternatively install it as a **plugin** (this repo is its
 git clone https://github.com/CallMeHFK/sovereign-echo
 cd sovereign-echo
 
+./install.sh                # zero-config: wires every agent it detects
+```
+
+That is the whole installation. The installer looks for the agents you already have (`~/.claude`, `~/.codex`, `~/.qwenpaw/workspaces/default`) and wires exactly those — no flags, no config files to edit. If it finds none, it says so and tells you what to do.
+
+Prefer to be explicit? The flags still work:
+
+```bash
+./install.sh --target claude       # one at a time (repeatable)
 ./install.sh --target all          # claude + codex + qwenpaw
-./install.sh --target claude       # or one at a time
 GENERIC_FILE=~/myagent/AGENTS.md ./install.sh --target generic
 ```
 
-The installer copies a tiny runtime to `~/.sovereign-echo/`, merges one hook entry into Claude's `settings.json` (with a timestamped backup, preserving everything you already have), and appends a clearly-marked block to the relevant `AGENTS.md` files. It is idempotent — run it as often as you like.
+The installer copies a tiny runtime to `~/.sovereign-echo/`, merges one hook entry into Claude's `settings.json` (with a timestamped backup, preserving everything you already have), and appends a clearly-marked block to the relevant `AGENTS.md` files. It is idempotent — run it as often as you like. `python3` is required: without it the sealed hook cannot run.
+
+### What is installed?
+
+```bash
+./install.sh --status
+```
+
+A read-only report: where the runtime is, the KeyId and both key paths, and per agent whether it is wired. It exits 0 whether or not anything is installed, and it never changes anything.
 
 ### Keys
 
@@ -53,8 +69,15 @@ A key pair is generated for you on first install and lands in `~/.sovereign-echo
 | `sm2-private.pem` | `0600` | **Never share this.** Anyone holding it can open your envelopes. The directory itself is `0700`. |
 | `sm2-public.pem` | `0644` | Safe to hand out. Enough to *verify*, not to *open*. |
 
+**Back the private key up.** Without `sm2-private.pem`, every notice you ever sealed becomes permanently unreadable — there is no recovery mechanism and deliberately no escrow. The installer says so the moment the key is created; copy it somewhere safe:
+
 ```bash
-./install.sh --keygen        # (re)generate the key pair, prints the KeyId
+./install.sh --export-key ~/backups/sm2-private.pem   # copies the key, mode 0600
+```
+
+```bash
+./install.sh --keygen              # (re)generate the key pair, prints the KeyId
+./install.sh --keygen --force      # rotate: old envelopes become unreadable
 ./install.sh --target all --no-keygen   # install without touching keys
 ```
 
@@ -120,16 +143,29 @@ Or point the hook at your own file without forking: `SOVEREIGN_ECHO_NOTICE=/path
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SOVEREIGN_ECHO_HOME` | `~/.sovereign-echo` | Runtime dir; keys live in `$HOME/keys` |
+| `SOVEREIGN_ECHO_HOME` | `~/.sovereign-echo` | Runtime dir; keys live in `$SOVEREIGN_ECHO_HOME/keys` |
 | `SOVEREIGN_ECHO_NOTICE` | `declarations/notice.compact.txt` | Notice text to seal and emit |
 | `SOVEREIGN_ECHO_SEAL` | `sealed` | `sealed` (default) or `plain` |
 
 ## Uninstall
 
 ```bash
-./install.sh --target all --uninstall
-rm -rf ~/.sovereign-echo
+./install.sh --uninstall
 ```
+
+One command, no flags: it finds everything sovereign-echo wired (the Claude hook, every `AGENTS.md` block), removes it, and removes the runtime scripts — but **keeps your key pair**, because you still need it to open notices sealed in the past. It then prints the exact command to delete the key as well:
+
+```bash
+./install.sh --uninstall --purge   # deletes ~/.sovereign-echo, private key included
+```
+
+`--purge` is irreversible: once the private key is gone, every notice you ever sealed is permanently unreadable. On a terminal it asks `[y/N]` first; when stdin is not a terminal it refuses unless you pass `--yes`:
+
+```bash
+./install.sh --uninstall --purge --yes
+```
+
+To unwire a single agent instead of everything, the old form still works: `./install.sh --target claude --uninstall`.
 
 Backups of modified files are left next to the originals (`*.bak-sovereign-echo-*`).
 
