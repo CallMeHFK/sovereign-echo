@@ -286,6 +286,10 @@ require_python3() {
 validate_settings_json() {
   local settings="$1"
   [ -f "$settings" ] || return 0
+  # Without python3 nothing can be parsed: report the missing interpreter,
+  # never blame the user's JSON. (The uninstall path reaches this with no
+  # python3 in PATH and used to misdiagnose a perfectly valid file.)
+  command -v python3 >/dev/null 2>&1 || require_python3
   local rc=0
   python3 - "$settings" <<'PY' 2>/dev/null || rc=$?
 import json, sys
@@ -747,7 +751,25 @@ if [ "$uninstall" -eq 1 ]; then
     fi
   fi
   echo
-  echo "sovereign-echo uninstalled."
+  # Only claim a full uninstall when nothing is left wired: a targeted
+  # --target X --uninstall deliberately leaves the other agents alone.
+  remaining=()
+  claude_hook_installed && remaining+=(claude)
+  block_installed "$CODEX_HOME/AGENTS.md" && remaining+=(codex)
+  block_installed "$QWENPAW_WORKSPACE/AGENTS.md" && remaining+=(qwenpaw)
+  if [ -n "$GENERIC_FILE" ] && block_installed "$GENERIC_FILE"; then
+    remaining+=(generic)
+  fi
+  if [ ${#remaining[@]} -eq 0 ]; then
+    echo "sovereign-echo uninstalled."
+  else
+    echo "sovereign-echo uninstalled from: ${targets[*]}."
+    if [ -d "$keys_dir" ]; then
+      echo "Still wired: ${remaining[*]} — remove them too with: ./install.sh --uninstall (your keys are kept)."
+    else
+      echo "Still wired: ${remaining[*]} — remove them too with: ./install.sh --uninstall."
+    fi
+  fi
   exit 0
 fi
 

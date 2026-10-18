@@ -143,6 +143,10 @@ OpenSSL 3 的 `dgst -sm3 -sign` / `-verify` 使用的是**空**用户标识（EN
 | `SOVEREIGN_ECHO_HOME` | `~/.sovereign-echo` | 运行时目录；密钥在 `$SOVEREIGN_ECHO_HOME/keys` |
 | `SOVEREIGN_ECHO_NOTICE` | `declarations/notice.compact.txt` | 要密封并输出的声明文本 |
 | `SOVEREIGN_ECHO_SEAL` | `sealed` | `sealed`（默认）或 `plain` |
+| `CLAUDE_HOME` | `~/.claude` | Claude Code 配置目录 |
+| `CODEX_HOME` | `~/.codex` | Codex 配置目录 |
+| `QWENPAW_WORKSPACE` | `~/.qwenpaw/workspaces/default` | QwenPaw 工作区目录 |
+| `GENERIC_FILE` | *（未设置）* | `--target generic` 的目标文件 |
 
 ## 卸载
 
@@ -162,9 +166,9 @@ OpenSSL 3 的 `dgst -sm3 -sign` / `-verify` 使用的是**空**用户标识（EN
 ./install.sh --uninstall --purge --yes
 ```
 
-如果只想卸载某一个 Agent，旧形式依然可用：`./install.sh --target claude --uninstall`。
+如果只想卸载某一个 Agent，旧形式依然可用：`./install.sh --target claude --uninstall`。这样只会移除 claude 的接入——其他 Agent 原样保留，`~/.sovereign-echo/` 里的运行时和密钥也都保留——最后一行会列出仍然处于接入状态的 Agent。
 
-被修改文件的备份会留在原位置（`*.bak-sovereign-echo-*`）。
+只有 `settings.json` 会备份：安装器改写它之前，会把原文件以 `settings.json.bak-sovereign-echo-*`（带时间戳）留在旁边。这些文件只是备份——确认一切正常后可以直接删除。`AGENTS.md` 则是原地修改，不做备份。
 
 ## 诚实的边界说明
 

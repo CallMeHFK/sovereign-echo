@@ -146,6 +146,10 @@ Or point the hook at your own file without forking: `SOVEREIGN_ECHO_NOTICE=/path
 | `SOVEREIGN_ECHO_HOME` | `~/.sovereign-echo` | Runtime dir; keys live in `$SOVEREIGN_ECHO_HOME/keys` |
 | `SOVEREIGN_ECHO_NOTICE` | `declarations/notice.compact.txt` | Notice text to seal and emit |
 | `SOVEREIGN_ECHO_SEAL` | `sealed` | `sealed` (default) or `plain` |
+| `CLAUDE_HOME` | `~/.claude` | Claude Code config dir |
+| `CODEX_HOME` | `~/.codex` | Codex config dir |
+| `QWENPAW_WORKSPACE` | `~/.qwenpaw/workspaces/default` | QwenPaw workspace dir |
+| `GENERIC_FILE` | *(unset)* | Target file for `--target generic` |
 
 ## Uninstall
 
@@ -165,9 +169,9 @@ One command, no flags: it finds everything sovereign-echo wired (the Claude hook
 ./install.sh --uninstall --purge --yes
 ```
 
-To unwire a single agent instead of everything, the old form still works: `./install.sh --target claude --uninstall`.
+To unwire a single agent instead of everything, the old form still works: `./install.sh --target claude --uninstall`. That unwires claude only — every other agent stays wired, the runtime in `~/.sovereign-echo/` stays, your keys stay — and the final line names whatever is still wired.
 
-Backups of modified files are left next to the originals (`*.bak-sovereign-echo-*`).
+Backups are made of `settings.json` only: before the installer rewrites it, the previous version is left next to it as `settings.json.bak-sovereign-echo-*` (timestamped). Those files are just backups — safe to delete once things are working. `AGENTS.md` files are edited in place, without a backup.
 
 ## Honest scope
 

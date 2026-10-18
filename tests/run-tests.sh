@@ -52,8 +52,8 @@ check "missing notice file emits nothing on stdout" '[ -z "$out2" ]'
 
 echo "== 3. fake-HOME install (all targets) =="
 FAKE="$(mktemp -d)"
-T2=""; T3=""; T4=""; T5=""; T6=""
-trap 'rm -rf "$FAKE" ${T2:+"$T2"} ${T3:+"$T3"} ${T4:+"$T4"} ${T5:+"$T5"} ${T6:+"$T6"}' EXIT
+T2=""; T3=""; T4=""; T5=""; T6=""; T7=""
+trap 'rm -rf "$FAKE" ${T2:+"$T2"} ${T3:+"$T3"} ${T4:+"$T4"} ${T5:+"$T5"} ${T6:+"$T6"} ${T7:+"$T7"}' EXIT
 mkdir -p "$FAKE/.claude" "$FAKE/.codex" "$FAKE/.qwenpaw/workspaces/default"
 echo "PRE-EXISTING CODEX CONTENT" > "$FAKE/.codex/AGENTS.md"
 echo "PRE-EXISTING QWENPAW CONTENT" > "$FAKE/.qwenpaw/workspaces/default/AGENTS.md"
@@ -428,6 +428,57 @@ priv_rotated="$(cat "$T6/.sovereign-echo/keys/sm2-private.pem")"
 out="$(HOME="$T6" "$repo_dir/install.sh" --keygen 2>&1)"
 check "--keygen without --force keeps the key" '[ "$priv_rotated" = "$(cat "$T6/.sovereign-echo/keys/sm2-private.pem")" ]'
 check "--keygen points at --force as the real command" 'printf "%s" "$out" | grep -q -- "--keygen --force"'
+
+echo "== 11. targeted uninstall edge cases =="
+T7="$(mktemp -d)"
+mkdir -p "$T7/.claude" "$T7/.codex" "$T7/.qwenpaw/workspaces/default"
+HOME="$T7" "$repo_dir/install.sh" --target all > /dev/null 2>&1; rc=$?
+check "setup: --target all install exits 0" '[ "$rc" -eq 0 ]'
+
+# A PATH without python3 must report the missing interpreter — never blame
+# the user's (valid) settings.json — and must not touch anything.
+NOPY="$(mktemp -d)"
+for b in bash sh grep awk sed cat cp rm mkdir chmod stat date find tail head mktemp dirname basename ls env cut tr sort; do
+  src="$(command -v "$b" 2>/dev/null)" && ln -s "$src" "$NOPY/$b" 2>/dev/null
+done
+out="$(PATH="$NOPY" HOME="$T7" "$repo_dir/install.sh" --target claude --uninstall 2>&1)"; rc=$?
+check "python3-less uninstall exits non-zero" '[ "$rc" -ne 0 ]'
+check "python3-less uninstall reports the missing interpreter" 'printf "%s" "$out" | grep -q "python3"'
+check "python3-less uninstall does not blame the JSON" '! printf "%s" "$out" | grep -q "not a valid JSON"'
+check "python3-less uninstall leaves the claude hook wired" 'grep -q "emit-notice.sh" "$T7/.claude/settings.json"'
+check "python3-less uninstall leaves no backup behind" '! ls "$T7/.claude" | grep -q "bak-sovereign-echo"'
+check "python3-less uninstall deletes nothing" '[ -f "$T7/.sovereign-echo/scripts/emit-notice.sh" ]'
+rm -rf "$NOPY"
+
+# Targeted uninstall: the final line must name what is still wired instead of
+# claiming everything was uninstalled.
+out="$(HOME="$T7" "$repo_dir/install.sh" --target claude --uninstall 2>&1)"; rc=$?
+check "targeted uninstall exits 0" '[ "$rc" -eq 0 ]'
+check "targeted uninstall removes only the claude hook" '! grep -q "emit-notice.sh" "$T7/.claude/settings.json" && [ "$(count_of "$T7/.codex/AGENTS.md" "BEGIN sovereign-echo")" = "1" ] && [ "$(count_of "$T7/.qwenpaw/workspaces/default/AGENTS.md" "BEGIN sovereign-echo")" = "1" ]'
+check "targeted uninstall keeps the runtime and keys" '[ -f "$T7/.sovereign-echo/scripts/emit-notice.sh" ] && [ -f "$T7/.sovereign-echo/keys/sm2-private.pem" ]'
+check "targeted uninstall final line names the remaining agents" 'tail -n 1 <<< "$out" | grep -q "codex" && tail -n 1 <<< "$out" | grep -q "qwenpaw"'
+check "targeted uninstall does not claim a full uninstall" '! printf "%s\n" "$out" | grep -qx "sovereign-echo uninstalled."'
+
+out="$(HOME="$T7" "$repo_dir/install.sh" --uninstall 2>&1)"; rc=$?
+check "bare uninstall after a targeted one exits 0" '[ "$rc" -eq 0 ]'
+check "bare uninstall removes the remaining agents" '[ "$(count_of "$T7/.codex/AGENTS.md" "BEGIN sovereign-echo")" = "0" ] && [ "$(count_of "$T7/.qwenpaw/workspaces/default/AGENTS.md" "BEGIN sovereign-echo")" = "0" ]'
+check "bare uninstall with nothing left prints the plain final line" 'printf "%s\n" "$out" | grep -qx "sovereign-echo uninstalled."'
+
+echo "== 12. README accuracy =="
+check "README.md backup note names settings.json" 'grep -q "settings.json.bak-sovereign-echo" "$repo_dir/README.md"'
+check "README.md no longer claims every modified file is backed up" '! grep -qi "backups of modified files" "$repo_dir/README.md"'
+check "README.md says bak files are safe to delete" 'grep -qi "safe to delete" "$repo_dir/README.md"'
+check "README.md documents CLAUDE_HOME" 'grep -q "CLAUDE_HOME" "$repo_dir/README.md"'
+check "README.md documents CODEX_HOME" 'grep -q "CODEX_HOME" "$repo_dir/README.md"'
+check "README.md documents QWENPAW_WORKSPACE" 'grep -q "QWENPAW_WORKSPACE" "$repo_dir/README.md"'
+check "README.md documents GENERIC_FILE" 'grep -q "GENERIC_FILE" "$repo_dir/README.md"'
+check "README.zh-CN.md backup note names settings.json" 'grep -q "settings.json.bak-sovereign-echo" "$repo_dir/README.zh-CN.md"'
+check "README.zh-CN.md no longer claims every modified file is backed up" '! grep -q "被修改文件的备份" "$repo_dir/README.zh-CN.md"'
+check "README.zh-CN.md says bak files are safe to delete" 'grep -q "可以直接删除" "$repo_dir/README.zh-CN.md"'
+check "README.zh-CN.md documents CLAUDE_HOME" 'grep -q "CLAUDE_HOME" "$repo_dir/README.zh-CN.md"'
+check "README.zh-CN.md documents CODEX_HOME" 'grep -q "CODEX_HOME" "$repo_dir/README.zh-CN.md"'
+check "README.zh-CN.md documents QWENPAW_WORKSPACE" 'grep -q "QWENPAW_WORKSPACE" "$repo_dir/README.zh-CN.md"'
+check "README.zh-CN.md documents GENERIC_FILE" 'grep -q "GENERIC_FILE" "$repo_dir/README.zh-CN.md"'
 
 echo
 echo "RESULT: $pass passed, $fail failed"
