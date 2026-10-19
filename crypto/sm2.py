@@ -55,9 +55,35 @@ OPENSSL_ID = b""
 _OID_EC_PUBLIC_KEY = bytes.fromhex("2A8648CE3D0201")       # 1.2.840.10045.2.1
 _OID_SM2_CURVE = bytes.fromhex("2A811CCF5501822D")         # 1.2.156.10197.1.301
 
+# Named curves we are most likely to be handed by mistake, so a rejection
+# can name the curve it refused instead of showing a bare OID.
+_OID_NAMED_CURVES = {
+    bytes.fromhex("2A8648CE3D030107"): "prime256v1",       # 1.2.840.10045.3.1.7
+    bytes.fromhex("2B8104000A"): "secp256k1",              # 1.3.132.0.10
+    bytes.fromhex("2B81040022"): "secp384r1",              # 1.3.132.0.34
+    bytes.fromhex("2B81040023"): "secp521r1",              # 1.3.132.0.35
+}
+
 
 class PEMFormatError(ValueError):
     """Raised when a PEM/DER structure cannot be parsed."""
+
+
+def _reject_foreign_curve(oid, where):
+    """Fail closed on any named curve that is not SM2.
+
+    A foreign-curve EC key can carry the very same id-ecPublicKey algorithm
+    OID as an SM2 key; running SM2 arithmetic on its scalar would silently
+    produce wrong-domain points, so reject it at import time.
+    """
+    if oid == _OID_SM2_CURVE:
+        return
+    name = _OID_NAMED_CURVES.get(oid)
+    label = " (%s)" % name if name else ""
+    raise PEMFormatError(
+        "%s names curve %s%s — not the SM2 curve (1.2.156.10197.1.301); "
+        "refusing to run SM2 arithmetic on a foreign-curve key"
+        % (where, oid.hex(), label))
 
 
 # ---------------------------------------------------------------------------
@@ -413,6 +439,15 @@ def _ec_private_from_der(content):
         raise PEMFormatError("malformed ECPrivateKey")
     if int.from_bytes(items[0][1], "big") != 1:
         raise PEMFormatError("unsupported ECPrivateKey version")
+    # ECPrivateKey ::= SEQUENCE { version, privateKey,
+    #                              parameters [0] ECParameters OPTIONAL, ... }
+    if len(items) >= 3 and items[2][0] == 0xA0:
+        tag, oid, _ = _read_tlv(items[2][1], 0)
+        if tag != 0x06:
+            raise PEMFormatError(
+                "SEC1 EC parameters are explicit, not a named curve — only "
+                "the SM2 curve (1.2.156.10197.1.301) is supported")
+        _reject_foreign_curve(oid, "SEC1 key")
     return int.from_bytes(items[1][1], "big")
 
 
@@ -436,10 +471,33 @@ def _private_key_from_pkcs8(content):
         raise PEMFormatError(
             "PKCS#8 key algorithm is not EC/SM2 (expected id-ecPublicKey "
             "1.2.840.10045.2.1 or SM2 1.2.156.10197.1.301)")
+    # AlgorithmIdentifier parameters, when present, name the curve: anything
+    # but SM2 there means the key is not an SM2 key.
+    if len(alg) >= 2:
+        if alg[1][0] != 0x06:
+            raise PEMFormatError(
+                "PKCS#8 EC parameters are explicit, not a named curve — only "
+                "the SM2 curve (1.2.156.10197.1.301) is supported")
+        _reject_foreign_curve(alg[1][1], "PKCS#8 key")
     tag, inner, _ = _read_tlv(items[2][1], 0)
     if tag != 0x30:
         raise PEMFormatError("malformed inner ECPrivateKey")
     return PrivateKey(_ec_private_from_der(inner))
+
+
+def _assert_on_sm2_curve(priv):
+    """Fail closed unless the key really belongs to the SM2 curve.
+
+    Derives the public point and lets PublicKey validate it: a key whose
+    scalar survives the [1, n-1] check but is not an SM2 scalar must not
+    pass import silently.
+    """
+    try:
+        priv.public_key()
+    except ValueError as exc:
+        raise PEMFormatError(
+            "private key does not belong to the SM2 curve: %s" % exc)
+    return priv
 
 
 def load_private_pem(text):
@@ -447,6 +505,10 @@ def load_private_pem(text):
 
     Both are what OpenSSL emits: `ecparam -name SM2 -genkey` writes PKCS#8
     (preceded by a parameters block, which is skipped here), `ec` writes SEC1.
+
+    Fails closed on anything that is not an SM2 key: a non-EC/SM2 algorithm
+    OID, a named curve other than SM2, a scalar outside [1, n-1], or a
+    derived point that is not on the SM2 curve.
     """
     for label, der in _pem_blocks(text):
         if label == "ENCRYPTED PRIVATE KEY":
@@ -458,8 +520,8 @@ def load_private_pem(text):
             raise PEMFormatError("expected a DER SEQUENCE")
         items = _der_items(content)
         if len(items) >= 2 and items[0][0] == 0x02 and items[1][0] == 0x30:
-            return _private_key_from_pkcs8(content)
-        return PrivateKey(_ec_private_from_der(content))
+            return _assert_on_sm2_curve(_private_key_from_pkcs8(content))
+        return _assert_on_sm2_curve(PrivateKey(_ec_private_from_der(content)))
     raise PEMFormatError(
         "no private key found: expected an 'EC PRIVATE KEY' or "
         "'PRIVATE KEY' PEM block")

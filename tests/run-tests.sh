@@ -52,8 +52,8 @@ check "missing notice file emits nothing on stdout" '[ -z "$out2" ]'
 
 echo "== 3. fake-HOME install (all targets) =="
 FAKE="$(mktemp -d)"
-T2=""; T3=""; T4=""; T5=""; T6=""; T7=""
-trap 'rm -rf "$FAKE" ${T2:+"$T2"} ${T3:+"$T3"} ${T4:+"$T4"} ${T5:+"$T5"} ${T6:+"$T6"} ${T7:+"$T7"}' EXIT
+T2=""; T3=""; T4=""; T5=""; T6=""; T7=""; T8=""; T9=""
+trap 'rm -rf "$FAKE" ${T2:+"$T2"} ${T3:+"$T3"} ${T4:+"$T4"} ${T5:+"$T5"} ${T6:+"$T6"} ${T7:+"$T7"} ${T8:+"$T8"} ${T9:+"$T9"}' EXIT
 mkdir -p "$FAKE/.claude" "$FAKE/.codex" "$FAKE/.qwenpaw/workspaces/default"
 echo "PRE-EXISTING CODEX CONTENT" > "$FAKE/.codex/AGENTS.md"
 echo "PRE-EXISTING QWENPAW CONTENT" > "$FAKE/.qwenpaw/workspaces/default/AGENTS.md"
@@ -479,6 +479,86 @@ check "README.zh-CN.md documents CLAUDE_HOME" 'grep -q "CLAUDE_HOME" "$repo_dir/
 check "README.zh-CN.md documents CODEX_HOME" 'grep -q "CODEX_HOME" "$repo_dir/README.zh-CN.md"'
 check "README.zh-CN.md documents QWENPAW_WORKSPACE" 'grep -q "QWENPAW_WORKSPACE" "$repo_dir/README.zh-CN.md"'
 check "README.zh-CN.md documents GENERIC_FILE" 'grep -q "GENERIC_FILE" "$repo_dir/README.zh-CN.md"'
+check "README.md says the Request: header is present only when bound" 'grep -q "present only when the notice is bound" "$repo_dir/README.md"'
+check "README.md says --request is not a control over the key holder" 'grep -q "not a control over the key holder" "$repo_dir/README.md"'
+check "README.zh-CN.md says the Request: header appears only when bound" 'grep -q "仅在声明被绑定到具体请求时出现" "$repo_dir/README.zh-CN.md"'
+check "README.zh-CN.md says --request is not a control over the key holder" 'grep -q "不是对持钥人的约束" "$repo_dir/README.zh-CN.md"'
+
+echo "== 13. installer safety (unsafe SOVEREIGN_ECHO_HOME, glob resilience) =="
+T8="$(mktemp -d)"
+
+# --- an unsafe runtime home must refuse, never delete ---
+mkdir -p "$T8/unsafe/.claude"
+out="$(SOVEREIGN_ECHO_HOME=/ HOME="$T8/unsafe" "$repo_dir/install.sh" --uninstall --purge --yes 2>&1)"; rc=$?
+check "purge with SOVEREIGN_ECHO_HOME=/ refuses (non-zero exit)" '[ "$rc" -ne 0 ]'
+check "unsafe-home purge refusal names the refusal" 'printf "%s" "$out" | grep -q "refusing to remove the runtime home"'
+check "unsafe-home purge deleted nothing" '[ -d / ] && [ -d "$T8/unsafe" ] && [ ! -e "$T8/unsafe/.sovereign-echo" ]'
+out="$(SOVEREIGN_ECHO_HOME=/ HOME="$T8/unsafe" "$repo_dir/install.sh" --uninstall </dev/null 2>&1)"; rc=$?
+check "bare uninstall with SOVEREIGN_ECHO_HOME=/ also refuses" '[ "$rc" -ne 0 ]'
+check "bare-uninstall refusal names the refusal" 'printf "%s" "$out" | grep -q "refusing to remove the runtime home"'
+check "bare-uninstall refusal deleted nothing" '[ -d / ] && [ ! -e "$T8/unsafe/.sovereign-echo" ]'
+
+# --- a glob that matches nothing must not abort the install ---
+# A plain reinstall re-copies crypto/*.py (cp merges into the existing
+# directory), so an emptied runtime alone cannot fail: install from a repo
+# copy whose crypto/ has no *.py — the same chmod glob, genuinely unexpanded.
+T8GLOB="$T8/glob"
+mkdir -p "$T8GLOB/repo" "$T8GLOB/home/.claude"
+cp "$repo_dir/install.sh" "$T8GLOB/repo/"
+cp -r "$repo_dir/declarations" "$repo_dir/scripts" "$repo_dir/templates" "$repo_dir/crypto" "$T8GLOB/repo/"
+rm -f "$T8GLOB/repo"/crypto/*.py
+out="$(HOME="$T8GLOB/home" "$T8GLOB/repo/install.sh" --target claude 2>&1)"; rc=$?
+check "install survives a crypto/*.py glob that matches nothing" '[ "$rc" -eq 0 ]'
+check "the sandbox really had no crypto/*.py (failure mode was live)" '[ ! -e "$T8GLOB/repo/crypto/smseal.py" ]'
+
+echo "== 14. key import hardening (foreign curves, RSA, SM2 interop) =="
+T9="$(mktemp -d)"
+if [ -f "$sealer" ] && command -v openssl >/dev/null 2>&1; then
+  # --- a foreign-curve EC key is rejected, and seal/open fail closed ---
+  openssl ecparam -name prime256v1 -genkey 2>/dev/null > "$T9/prime256v1.pem"
+  if [ -s "$T9/prime256v1.pem" ]; then
+    python3 "$sealer" keygen --home "$T9/p256home" </dev/null >/dev/null 2>&1
+    python3 "$sealer" seal --notice "$notice" --home "$T9/p256home" </dev/null > "$T9/p256good.env" 2>/dev/null
+    check "setup: a valid envelope exists for the open check" 'grep -q "BEGIN SOVEREIGN-ECHO SEALED NOTICE" "$T9/p256good.env"'
+    cp -f "$T9/prime256v1.pem" "$T9/p256home/keys/sm2-private.pem"
+    out="$(python3 "$sealer" seal --notice "$notice" --home "$T9/p256home" </dev/null 2>&1)"; rc=$?
+    check "prime256v1 key is rejected by seal" '[ "$rc" -ne 0 ]'
+    check "rejection names the wrong curve" 'printf "%s" "$out" | grep -q "prime256v1"'
+    check "rejected key produced no envelope" '! printf "%s" "$out" | grep -q "BEGIN SOVEREIGN-ECHO SEALED NOTICE"'
+    python3 "$sealer" open --home "$T9/p256home" --in "$T9/p256good.env" >/dev/null 2>&1; rc=$?
+    check "open also fails with a foreign-curve key" '[ "$rc" -ne 0 ]'
+  else
+    skip "prime256v1 rejection (openssl could not generate the key)"
+  fi
+
+  # --- an RSA PKCS#8 key is rejected with the clear algorithm message ---
+  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null > "$T9/rsa.pem"
+  if [ -s "$T9/rsa.pem" ]; then
+    mkdir -p "$T9/rsahome/keys"
+    cp -f "$T9/rsa.pem" "$T9/rsahome/keys/sm2-private.pem"
+    out="$(python3 "$sealer" seal --notice "$notice" --home "$T9/rsahome" </dev/null 2>&1)"; rc=$?
+    check "RSA PKCS#8 key is rejected" '[ "$rc" -ne 0 ]'
+    check "RSA rejection keeps the clear algorithm message" 'printf "%s" "$out" | grep -q "not EC/SM2"'
+  else
+    skip "RSA PKCS#8 rejection (openssl could not generate the key)"
+  fi
+
+  # --- regression: OpenSSL's SM2 PKCS#8 output still round-trips ---
+  openssl ecparam -name SM2 -genkey 2>/dev/null > "$T9/sm2pkcs8.pem"
+  if [ -s "$T9/sm2pkcs8.pem" ]; then
+    mkdir -p "$T9/sm2home/keys"
+    cp -f "$T9/sm2pkcs8.pem" "$T9/sm2home/keys/sm2-private.pem"
+    python3 "$sealer" seal --notice "$notice" --home "$T9/sm2home" </dev/null > "$T9/sm2pkcs8.env" 2>/dev/null; rc=$?
+    check "OpenSSL SM2 PKCS#8 key still seals" '[ "$rc" -eq 0 ]'
+    python3 "$sealer" open --home "$T9/sm2home" --in "$T9/sm2pkcs8.env" > "$T9/sm2pkcs8.out" 2>/dev/null; rc=$?
+    check "OpenSSL SM2 PKCS#8 key still opens" '[ "$rc" -eq 0 ]'
+    check "SM2 PKCS#8 round trip is byte for byte" 'tail -n +2 "$T9/sm2pkcs8.out" | cmp -s - "$notice"'
+  else
+    skip "SM2 PKCS#8 interop (openssl lacks SM2 support)"
+  fi
+else
+  skip "key import hardening checks (crypto/ or openssl not present)"
+fi
 
 echo
 echo "RESULT: $pass passed, $fail failed"

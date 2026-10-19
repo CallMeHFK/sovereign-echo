@@ -105,6 +105,8 @@ Request: <64 hex>
 -----END SOVEREIGN-ECHO SEALED NOTICE-----
 ```
 
+`Request:` 头仅在声明被绑定到具体请求时出现——`--print-sealed`，或没有 prompt 的 hook 调用，都会整行省略该头。
+
 需要接受的后果：服务方收到的是一个不透明的信封，而不是你的明文声明。这正是目的——你的立场仍然在案、每次都在场，但只有持有私钥的人能读到它。
 
 之后想拆开或校验某段对话记录里的信封（把包裹块粘到 `FILE` 里，或从 stdin 传入）：
@@ -115,6 +117,8 @@ python3 ~/.sovereign-echo/crypto/smseal.py verify --in FILE --pubkey other.pub.p
 ```
 
 `open` 会先输出一行状态头（`OK key=… created=… request=…`），随后是还原出的明文；`verify` 只输出同类的一行。`open` 需要你的私钥，`verify` 只需要对方的公钥。这个不对称正是"只有我能解密"的含义：把公钥发给任何人，他们都能确认某个信封确实出自你且未被篡改，但谁也读不到里面的内容。
+
+`--request` 绑定是给你自己核验用的，不是对持钥人的约束：`open`/`verify` 只在传入 `--request` 时才检查它，而持私钥的人任何时候都能不带它打开绑定了请求的信封。这是刻意为之——绑定是让你确认某条转录里的声明确实与某个 prompt 相对应，从来不是为了限制持钥人。
 
 如果无法完成密封（缺少 python3、模块缺失或没有密钥），hook **什么都不会输出**，只在 stderr 说明原因。退回明文等于自我否定——无法密封就只能失败关闭（fail closed）。
 

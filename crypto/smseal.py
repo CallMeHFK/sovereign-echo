@@ -180,11 +180,13 @@ def cmd_seal(args):
                      EXIT_USAGE)
     try:
         priv = load_private_pem(_read_text(p["priv"]))
+    except Exception as exc:
+        return _fail("cannot load private key %s: %s" % (p["priv"], exc),
+                     EXIT_USAGE)
+    try:
         plaintext = _notice_text(args)
     except _CliError as exc:
         return _fail(str(exc), EXIT_USAGE)
-    except Exception as exc:
-        return _fail("cannot read notice: %s" % exc, EXIT_USAGE)
     request = _hook_request(args)
     sys.stdout.write(seal(plaintext, priv, request))
     return EXIT_OK
@@ -242,6 +244,10 @@ def cmd_open(args):
                      EXIT_USAGE)
     try:
         priv = load_private_pem(_read_text(p["priv"]))
+    except Exception as exc:
+        return _fail("cannot load private key %s: %s" % (p["priv"], exc),
+                     EXIT_USAGE)
+    try:
         env = parse(_read_envelope(args))
     except (EnvelopeError, _CliError) as exc:
         return _fail(str(exc), getattr(exc, "code", EXIT_MALFORMED))

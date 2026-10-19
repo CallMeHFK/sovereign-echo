@@ -81,6 +81,18 @@ explicit_targets=0
 
 err() { echo "error: $*" >&2; }
 
+# Every rm -rf / chmod on the runtime home below is only safe if $SE_HOME
+# really names a directory. An empty or root value would be catastrophic,
+# so refuse instead of trusting the environment.
+refuse_unsafe_runtime_home() {
+  case "${SE_HOME:-}" in
+    ""|"/"|"//"|"/."|"/..")
+      echo "error: refusing to remove the runtime home '$SE_HOME' (unset or unsafe path)." >&2
+      exit 1
+      ;;
+  esac
+}
+
 note_wired()   { wired+=("$1"); }
 note_skipped() { echo "  skipped: $1" >&2; skipped+=("$1"); }
 
@@ -519,18 +531,21 @@ install_runtime() {
     exit 1
   fi
   # SE_HOME holds the private key: keep it to ourselves.
+  refuse_unsafe_runtime_home
   chmod 700 "$SE_HOME"
   cp -r "$repo_dir/declarations" "$repo_dir/scripts" "$repo_dir/templates" "$SE_HOME/"
   if [ -d "$repo_dir/crypto" ]; then
     cp -r "$repo_dir/crypto" "$SE_HOME/"
-    chmod 0644 "$SE_HOME"/crypto/*.py
+    # A glob that matches nothing would abort the install under `set -e`;
+    # skip it instead of chmod-ing the literal pattern.
+    for f in "$SE_HOME"/crypto/*.py; do [ -e "$f" ] && chmod 0644 "$f"; done
     # Python writes __pycache__ next to these modules as soon as the hook runs;
     # never ship a stale copy of it (or any other bytecode) into the runtime.
     rm -rf "$SE_HOME"/crypto/__pycache__
   else
     echo "[sovereign-echo] warning: $repo_dir/crypto missing — sealed mode unavailable" >&2
   fi
-  chmod +x "$SE_HOME"/scripts/*.sh
+  for f in "$SE_HOME"/scripts/*.sh; do [ -e "$f" ] && chmod +x "$f"; done
   runtime_installed=1
   echo "runtime installed to $SE_HOME"
   return 0
@@ -727,10 +742,14 @@ if [ "$uninstall" -eq 1 ]; then
   # explicit --target X --uninstall only unwires X, as before.
   if [ -d "$SE_HOME" ]; then
     if [ "$purge_confirmed" -eq 1 ]; then
+      refuse_unsafe_runtime_home
       rm -rf "$SE_HOME"
       echo "Deleted $SE_HOME entirely — the private key is gone."
       echo "Every notice sealed so far is now permanently unreadable (no recovery mechanism)."
     elif [ "$explicit_targets" -eq 0 ]; then
+      # The tail cleanup below deletes everything under $SE_HOME except the
+      # keys: with an unsafe $SE_HOME that is just as destructive as --purge.
+      refuse_unsafe_runtime_home
       leftovers="$(find "$SE_HOME" -mindepth 1 -maxdepth 1 ! -name keys 2>/dev/null || true)"
       if [ -n "$leftovers" ]; then
         if find "$SE_HOME" -mindepth 1 -maxdepth 1 ! -name keys -exec rm -rf {} + 2>/dev/null; then

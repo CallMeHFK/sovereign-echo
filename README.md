@@ -108,6 +108,8 @@ Request: <64 hex>
 -----END SOVEREIGN-ECHO SEALED NOTICE-----
 ```
 
+The `Request:` header is present only when the notice is bound to a specific request — `--print-sealed`, or a hook invocation with no prompt, omits the line entirely.
+
 The accepted consequence: the provider receives an opaque envelope, not your declaration in plaintext. That is the point — your position stays on the record, on your terms, readable only by whoever holds your private key.
 
 Reopen or check a transcript later (paste the armored block into `FILE`, or pipe it on stdin):
@@ -118,6 +120,8 @@ python3 ~/.sovereign-echo/crypto/smseal.py verify --in FILE --pubkey other.pub.p
 ```
 
 `open` prints a one-line status header (`OK key=… created=… request=…`) followed by the recovered plaintext; `verify` prints the same kind of line and nothing else. `open` needs your private key; `verify` needs only someone's public key. That asymmetry *is* the "only I can decrypt" property: hand your public key to anyone and they can confirm a sealed notice is really yours and unmodified, while nobody can read its contents.
+
+The `--request` binding is a verification aid for you, not a control over the key holder: `open` and `verify` check it only when `--request` is supplied, and whoever holds the private key can always open a request-bound envelope without it. That asymmetry is intentional — the binding lets *you* confirm a transcript notice is the one bound to a given prompt; it was never meant to restrain the key holder.
 
 If sealing is impossible (no python3, module missing, or no keystore) the hook emits **nothing at all** and notes why on stderr. Falling back to plaintext would defeat the whole point — a hook that cannot seal fails closed.
 
